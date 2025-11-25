@@ -59,6 +59,9 @@ private extension ContentView {
                         .textFieldStyle(.roundedBorder)
                 }
             }
+            Toggle("Strict host key checking", isOn: $viewModel.strictHostKeyChecking)
+                .toggleStyle(.switch)
+                .help("When enabled, rsync/ssh will require known hosts to match and will not auto-accept new hosts.")
         }
     }
 
@@ -111,12 +114,6 @@ private extension ContentView {
             Stepper("Every \(viewModel.autoSyncIntervalMinutes) minutes", value: $viewModel.autoSyncIntervalMinutes, in: 5...240, step: 5)
                 .disabled(!viewModel.autoSyncEnabled)
         }
-        .onChange(of: viewModel.autoSyncEnabled) { _, newValue in
-            viewModel.updateAutoSyncEnabled(newValue)
-        }
-        .onChange(of: viewModel.autoSyncIntervalMinutes) { _, _ in
-            viewModel.refreshAutoSyncTimerIfNeeded()
-        }
     }
 
     var syncCard: some View {
@@ -163,17 +160,27 @@ private extension ContentView {
                 .buttonStyle(.bordered)
             }
             if !viewModel.quietMode && !viewModel.log.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(viewModel.log.enumerated()), id: \.offset) { _, line in
-                            Text(line)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.primary)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(viewModel.log.enumerated()), id: \.offset) { index, line in
+                                Text(line)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.primary)
+                                    .id(index)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 220)
+                    .onChange(of: viewModel.log.count) { _, _ in
+                        if let last = viewModel.log.indices.last {
+                            withAnimation {
+                                proxy.scrollTo(last, anchor: .bottom)
+                            }
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(minHeight: 220)
             } else if viewModel.quietMode {
                 Text("Quiet mode enabled. Live log hidden. Use \"Show Log File\" to view output.")
                     .font(.caption)

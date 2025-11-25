@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import Security
 
 enum FileFilter: String, CaseIterable, Identifiable {
     case all
@@ -50,6 +51,7 @@ enum FileFilter: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 final class SyncViewModel: ObservableObject {
     @Published var host = ""
     @Published var username = ""
@@ -65,14 +67,25 @@ final class SyncViewModel: ObservableObject {
     @Published var quietMode = false
     @Published var currentFile: String? = nil
     @Published var currentSpeed: String? = nil
-    @Published var autoSyncEnabled = false
-    @Published var autoSyncIntervalMinutes = 30
+    @Published var autoSyncEnabled = false {
+        didSet {
+            guard autoSyncEnabled != oldValue else { return }
+            handleAutoSyncToggle()
+        }
+    }
+    @Published var autoSyncIntervalMinutes = 30 {
+        didSet {
+            guard autoSyncIntervalMinutes != oldValue else { return }
+            refreshAutoSyncTimerIfNeeded()
+        }
+    }
+    @Published var strictHostKeyChecking = false
 
     private let maxLogLines = 500
-    private let flushInterval: TimeInterval = 0.3
     let logFileURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("omnisync.log")
     private var runner = RsyncRunner()
     private var autoSyncTimer: Timer?
+    private var cancellationRequested = false
     private var lastProgressUpdate = Date.distantPast
     private var cancellables = Set<AnyCancellable>()
 
@@ -83,6 +96,9 @@ final class SyncViewModel: ObservableObject {
     init() {
         loadPersisted()
         setupPersistence()
+        if autoSyncEnabled {
+            handleAutoSyncToggle()
+        }
     }
 
     var canSync: Bool {
@@ -92,6 +108,11 @@ final class SyncViewModel: ObservableObject {
     func sync() {
         guard canSync else { return }
         if isSyncing { return }
+        guard FileManager.default.fileExists(atPath: localPath) else {
+            statusMessage = "Local path not found"
+            return
+        }
+        cancellationRequested = false
         log.removeAll()
         statusMessage = "Starting sync..."
         isSyncing = true
@@ -110,7 +131,7 @@ final class SyncViewModel: ObservableObject {
             filterArgs: filterArgs,
             quietMode: quietMode,
             logFileURL: logFileURL,
-            flushInterval: flushInterval
+            strictHostKeyChecking: strictHostKeyChecking
         )
 
         runner.run(
@@ -138,31 +159,39 @@ final class SyncViewModel: ObservableObject {
             },
             onCompletion: { [weak self] success in
                 Task { @MainActor in
-                    self?.statusMessage = success ? "Sync completed" : "Sync failed"
-                    self?.isSyncing = false
-                    self?.progress = nil
-                    self?.currentFile = nil
-                    self?.currentSpeed = nil
+                    guard let self else { return }
+                    if self.cancellationRequested {
+                        self.statusMessage = "Sync cancelled"
+                    } else {
+                        self.statusMessage = success ? "Sync completed" : "Sync failed"
+                    }
+                    self.isSyncing = false
+                    self.progress = nil
+                    self.currentFile = nil
+                    self.currentSpeed = nil
+                    self.cancellationRequested = false
                 }
             }
         )
     }
 
     func cancelSync() {
+        cancellationRequested = true
         runner.cancel()
         isSyncing = false
         statusMessage = "Sync cancelled"
+        progress = nil
         currentFile = nil
         currentSpeed = nil
     }
 
     func updateAutoSyncEnabled(_ enabled: Bool) {
         autoSyncEnabled = enabled
-        enabled ? startAutoSyncTimer() : stopAutoSyncTimer()
     }
 
     func refreshAutoSyncTimerIfNeeded() {
         guard autoSyncEnabled else { return }
+        guard ensureAutoSyncReady() else { return }
         startAutoSyncTimer()
     }
 
@@ -215,28 +244,42 @@ final class SyncViewModel: ObservableObject {
 
     private func startAutoSyncTimer() {
         stopAutoSyncTimer()
-        guard canSync else {
-            Task { @MainActor in
-                self.appendLogs(["Fill in connection and paths before enabling auto sync."], progress: nil)
-            }
-            autoSyncEnabled = false
-            return
-        }
 
         let interval = max(1, autoSyncIntervalMinutes) * 60
         autoSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(interval), repeats: true) { [weak self] _ in
             guard let self else { return }
-            if self.isSyncing {
-                Task { @MainActor in self.appendLogs(["Auto sync skipped; a sync is already running."], progress: nil) }
-                return
+            Task { @MainActor in
+                guard self.ensureAutoSyncReady() else { return }
+                if self.isSyncing {
+                    self.appendLogs(["Auto sync skipped; a sync is already running."], progress: nil)
+                    return
+                }
+                self.sync()
             }
-            self.sync()
         }
     }
 
     private func stopAutoSyncTimer() {
         autoSyncTimer?.invalidate()
         autoSyncTimer = nil
+    }
+
+    private func ensureAutoSyncReady() -> Bool {
+        guard canSync else {
+            appendLogs(["Fill in connection and paths before enabling auto sync."], progress: nil)
+            autoSyncEnabled = false
+            return false
+        }
+        return true
+    }
+
+    private func handleAutoSyncToggle() {
+        guard autoSyncEnabled else {
+            stopAutoSyncTimer()
+            return
+        }
+        guard ensureAutoSyncReady() else { return }
+        startAutoSyncTimer()
     }
 
     private func buildFilterArgs() -> [String] {
@@ -280,13 +323,19 @@ final class SyncViewModel: ObservableObject {
 
         bind($host, key: "host")
         bind($username, key: "username")
-        bind($password, key: "password")
         bind($remotePath, key: "remotePath")
         bind($localPath, key: "localPath")
         bind($customFilterPatterns, key: "customFilterPatterns")
         bind($quietMode, key: "quietMode")
         bind($autoSyncEnabled, key: "autoSyncEnabled")
         bind($autoSyncIntervalMinutes, key: "autoSyncIntervalMinutes")
+        bind($strictHostKeyChecking, key: "strictHostKeyChecking")
+
+        $password
+            .sink { [weak self] value in
+                self?.storePasswordInKeychain(value)
+            }
+            .store(in: &cancellables)
 
         $selectedFilter
             .sink { filter in
@@ -299,22 +348,71 @@ final class SyncViewModel: ObservableObject {
         let defaults = UserDefaults.standard
         host = defaults.string(forKey: "host") ?? ""
         username = defaults.string(forKey: "username") ?? ""
-        password = defaults.string(forKey: "password") ?? ""
+        password = (try? readPasswordFromKeychain()) ?? ""
         remotePath = defaults.string(forKey: "remotePath") ?? ""
         localPath = defaults.string(forKey: "localPath") ?? ""
         customFilterPatterns = defaults.string(forKey: "customFilterPatterns") ?? ""
         quietMode = defaults.object(forKey: "quietMode") as? Bool ?? false
         autoSyncEnabled = defaults.object(forKey: "autoSyncEnabled") as? Bool ?? false
         autoSyncIntervalMinutes = defaults.object(forKey: "autoSyncIntervalMinutes") as? Int ?? 30
+        strictHostKeyChecking = defaults.object(forKey: "strictHostKeyChecking") as? Bool ?? false
         if let filterRaw = defaults.string(forKey: "selectedFilter"), let filter = FileFilter(rawValue: filterRaw) {
             selectedFilter = filter
         }
+    }
+
+    // MARK: - Keychain
+
+    private func storePasswordInKeychain(_ password: String) {
+        let account = "omnisync.password"
+        let service = "com.omnisync.app"
+
+        if password.isEmpty {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrAccount as String: account,
+                kSecAttrService as String: service
+            ]
+            SecItemDelete(query as CFDictionary)
+            return
+        }
+
+        let encoded = password.data(using: .utf8) ?? Data()
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: account,
+            kSecAttrService as String: service
+        ]
+
+        let update: [String: Any] = [kSecValueData as String: encoded]
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+
+        if status == errSecItemNotFound {
+            query[kSecValueData as String] = encoded
+            SecItemAdd(query as CFDictionary, nil)
+        }
+    }
+
+    private func readPasswordFromKeychain() throws -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: "omnisync.password",
+            kSecAttrService as String: "com.omnisync.app",
+            kSecReturnData as String: true
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status != errSecItemNotFound else { return "" }
+        guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        guard let data = item as? Data, let password = String(data: data, encoding: .utf8) else { return "" }
+        return password
     }
 }
 
 // MARK: - Rsync Runner
 
-private struct RsyncConfig {
+struct RsyncConfig {
     let host: String
     let username: String
     let password: String
@@ -323,13 +421,23 @@ private struct RsyncConfig {
     let filterArgs: [String]
     let quietMode: Bool
     let logFileURL: URL
-    let flushInterval: TimeInterval
+    let strictHostKeyChecking: Bool
 }
 
-private final class RsyncRunner {
+final class RsyncRunner {
     private var process: Process?
     private let tempKnownHosts = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("omnisync_known_hosts")
     private let queue = DispatchQueue(label: "rsync-output-buffer", qos: .utility)
+
+    private func tearDownHandlers(for proc: Process) {
+        if let out = proc.standardOutput as? Pipe {
+            out.fileHandleForReading.readabilityHandler = nil
+        }
+        if let err = proc.standardError as? Pipe {
+            err.fileHandleForReading.readabilityHandler = nil
+        }
+        proc.terminationHandler = nil
+    }
 
     func run(
         config: RsyncConfig,
@@ -340,15 +448,20 @@ private final class RsyncRunner {
         onStart: @escaping () -> Void,
         onCompletion: @escaping (Bool) -> Void
     ) {
-        guard process == nil else {
-            onLog(["A sync is already running."])
-            return
+        if let current = process {
+            if current.isRunning {
+                onLog(["A sync is already running."])
+                return
+            } else {
+                tearDownHandlers(for: current)
+                process = nil
+            }
         }
         prepareKnownHosts()
         resetLogFile(at: config.logFileURL)
 
         var sshOptions = [
-            "-o", "StrictHostKeyChecking=no",
+            "-o", "StrictHostKeyChecking=\(config.strictHostKeyChecking ? "yes" : "accept-new")",
             "-o", "UserKnownHostsFile=\(tempKnownHosts.path)"
         ]
         if config.password.isEmpty {
@@ -439,28 +552,23 @@ private final class RsyncRunner {
 
         self.process = process
         process.terminationHandler = { [weak self] proc in
-            self?.process = nil
+            if let self {
+                self.tearDownHandlers(for: proc)
+                self.process = nil
+            }
             if let out = proc.standardOutput as? Pipe {
-                out.fileHandleForReading.readabilityHandler = nil
+                out.fileHandleForReading.closeFile()
             }
             if let err = proc.standardError as? Pipe {
-                err.fileHandleForReading.readabilityHandler = nil
+                err.fileHandleForReading.closeFile()
             }
-            proc.standardOutput = nil
-            proc.standardError = nil
             onCompletion(proc.terminationStatus == 0)
         }
     }
 
     func cancel() {
         if let proc = process {
-            if let out = proc.standardOutput as? Pipe {
-                out.fileHandleForReading.readabilityHandler = nil
-            }
-            if let err = proc.standardError as? Pipe {
-                err.fileHandleForReading.readabilityHandler = nil
-            }
-            proc.terminationHandler = nil
+            tearDownHandlers(for: proc)
             proc.terminate()
         }
         process = nil
@@ -508,7 +616,7 @@ private final class RsyncRunner {
         return Array(Set(candidates))
     }
 
-    private static func parseProgress(from line: String) -> Double? {
+    static func parseProgress(from line: String) -> Double? {
         guard let percentRange = line.range(of: #"(\d{1,3})%"#, options: .regularExpression) else {
             return nil
         }
@@ -517,7 +625,7 @@ private final class RsyncRunner {
         return min(max(value / 100.0, 0), 1)
     }
 
-    private static func extractFile(from line: String) -> String? {
+    static func extractFile(from line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if trimmed.contains("%") { return nil }
@@ -531,7 +639,7 @@ private final class RsyncRunner {
         return nil
     }
 
-    private static func parseSpeed(from line: String) -> String? {
+    static func parseSpeed(from line: String) -> String? {
         let tokens = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !tokens.isEmpty else { return nil }
         return tokens.first { $0.contains("/s") }
