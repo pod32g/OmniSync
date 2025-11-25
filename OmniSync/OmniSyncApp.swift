@@ -43,6 +43,14 @@ struct OmniSyncApp: App {
                 Text(viewModel.statusMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let progress = viewModel.progress {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: progress, total: 1.0)
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Button {
                     viewModel.sync()

@@ -235,7 +235,6 @@ private struct RsyncConfig {
 private final class RsyncRunner {
     private var process: Process?
     private let tempKnownHosts = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("omnisync_known_hosts")
-    private var pendingRemainder = ""
     private let queue = DispatchQueue(label: "rsync-output-buffer", qos: .utility)
 
     func run(
@@ -245,7 +244,10 @@ private final class RsyncRunner {
         onStart: @escaping () -> Void,
         onCompletion: @escaping (Bool) -> Void
     ) {
-        guard process == nil else { return }
+        guard process == nil else {
+            onLog(["A sync is already running."])
+            return
+        }
         prepareKnownHosts()
         resetLogFile(at: config.logFileURL)
 
@@ -286,23 +288,27 @@ private final class RsyncRunner {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        let handler: (Pipe) -> Void = { pipe in
+        let handler: (Pipe) -> Void = { [weak self] pipe in
+            var pendingRemainder = ""
             pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 guard let self else { return }
                 let data = handle.availableData
-                if data.isEmpty { return }
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    return
+                }
                 FileHandle.standardOutput.write(data)
 
                 queue.async {
                     let text = String(decoding: data, as: UTF8.self)
-                    let combined = self.pendingRemainder + text
+                    let combined = pendingRemainder + text
                     let components = combined.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r" })
                     var lines: [String] = []
                     if let last = components.last, !combined.hasSuffix("\n") && !combined.hasSuffix("\r") {
-                        self.pendingRemainder = String(last)
+                        pendingRemainder = String(last)
                         lines = components.dropLast().map { String($0) }
                     } else {
-                        self.pendingRemainder = ""
+                        pendingRemainder = ""
                         lines = components.map { String($0) }
                     }
 
@@ -332,6 +338,12 @@ private final class RsyncRunner {
         self.process = process
         process.terminationHandler = { [weak self] proc in
             self?.process = nil
+            if let out = proc.standardOutput as? Pipe {
+                out.fileHandleForReading.readabilityHandler = nil
+            }
+            if let err = proc.standardError as? Pipe {
+                err.fileHandleForReading.readabilityHandler = nil
+            }
             proc.standardOutput = nil
             proc.standardError = nil
             onCompletion(proc.terminationStatus == 0)
@@ -339,7 +351,16 @@ private final class RsyncRunner {
     }
 
     func cancel() {
-        process?.terminate()
+        if let proc = process {
+            if let out = proc.standardOutput as? Pipe {
+                out.fileHandleForReading.readabilityHandler = nil
+            }
+            if let err = proc.standardError as? Pipe {
+                err.fileHandleForReading.readabilityHandler = nil
+            }
+            proc.terminationHandler = nil
+            proc.terminate()
+        }
         process = nil
     }
 
