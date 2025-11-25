@@ -9,6 +9,11 @@ struct ContentView: View {
             SidebarView(viewModel: viewModel)
         } detail: {
             ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .fill(.clear)
+                    .glassEffect(.clear, in: Rectangle())
+                    .ignoresSafeArea()
+
                 VStack(alignment: .leading, spacing: 16) {
                     header
                     ScrollView {
