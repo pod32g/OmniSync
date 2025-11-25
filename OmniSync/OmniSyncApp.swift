@@ -36,7 +36,9 @@ struct OmniSyncApp: App {
             }
         }
 
-        MenuBarExtra("OmniSync", systemImage: "externaldrive.fill.badge.icloud") {
+        MenuBarExtra {
+            MenuBarProgressView(progress: viewModel.isSyncing ? viewModel.progress : nil)
+        } label: {
             VStack(alignment: .leading, spacing: 10) {
                 Text("OmniSync")
                     .font(.headline)
