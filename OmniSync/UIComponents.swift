@@ -19,13 +19,15 @@ struct CardSection<Content: View>: View {
         }
         .padding(16)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.background.opacity(0.6))
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.regularMaterial)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                        .blendMode(.overlay)
                 )
         )
+        .shadow(color: Color.black.opacity(0.08), radius: 14, x: 0, y: 10)
     }
 }
 
