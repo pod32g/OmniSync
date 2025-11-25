@@ -64,6 +64,7 @@ final class SyncViewModel: ObservableObject {
     @Published var log: [String] = []
     @Published var quietMode = false
     @Published var currentFile: String? = nil
+    @Published var currentSpeed: String? = nil
     @Published var autoSyncEnabled = false
     @Published var autoSyncIntervalMinutes = 30
 
@@ -95,6 +96,8 @@ final class SyncViewModel: ObservableObject {
         statusMessage = "Starting sync..."
         isSyncing = true
         progress = 0
+        currentFile = nil
+        currentSpeed = nil
         resetLogFile()
 
         let filterArgs = buildFilterArgs()
@@ -118,11 +121,13 @@ final class SyncViewModel: ObservableObject {
             onFile: { [weak self] file in
                 Task { @MainActor in
                     self?.currentFile = file
-                    if let progress = self?.progress {
-                        self?.statusMessage = "Syncing \(file) (\(Int(progress * 100))%)"
-                    } else {
-                        self?.statusMessage = "Syncing \(file)"
-                    }
+                    self?.updateStatus()
+                }
+            },
+            onSpeed: { [weak self] speed in
+                Task { @MainActor in
+                    self?.currentSpeed = speed
+                    self?.updateStatus()
                 }
             },
             onProgress: { [weak self] value in
@@ -137,6 +142,7 @@ final class SyncViewModel: ObservableObject {
                     self?.isSyncing = false
                     self?.progress = nil
                     self?.currentFile = nil
+                    self?.currentSpeed = nil
                 }
             }
         )
@@ -147,6 +153,7 @@ final class SyncViewModel: ObservableObject {
         isSyncing = false
         statusMessage = "Sync cancelled"
         currentFile = nil
+        currentSpeed = nil
     }
 
     func updateAutoSyncEnabled(_ enabled: Bool) {
@@ -178,10 +185,31 @@ final class SyncViewModel: ObservableObject {
             if delta >= 0.02 || now.timeIntervalSince(lastProgressUpdate) >= 0.5 {
                 progress = latestProgress
                 lastProgressUpdate = now
-                if let file = currentFile {
-                    statusMessage = "Syncing \(file) (\(Int(latestProgress * 100))%)"
-                }
+                updateStatus()
             }
+        }
+    }
+
+    private func updateStatus() {
+        let pctText: String? = {
+            guard let pct = progress else { return nil }
+            return "\(Int(pct * 100))%"
+        }()
+        let speedText = currentSpeed
+
+        if let file = currentFile {
+            var parts: [String] = ["Syncing \(file)"]
+            if let pctText {
+                parts.append("(\(pctText))")
+            }
+            if let speedText {
+                parts.append("@ \(speedText)")
+            }
+            statusMessage = parts.joined(separator: " ")
+        } else if let pctText {
+            statusMessage = "Syncing (\(pctText))"
+        } else {
+            statusMessage = "Syncing..."
         }
     }
 
@@ -307,6 +335,7 @@ private final class RsyncRunner {
         config: RsyncConfig,
         onLog: @escaping ([String]) -> Void,
         onFile: @escaping (String) -> Void,
+        onSpeed: @escaping (String) -> Void,
         onProgress: @escaping (Double?) -> Void,
         onStart: @escaping () -> Void,
         onCompletion: @escaping (Bool) -> Void
@@ -382,6 +411,9 @@ private final class RsyncRunner {
                     if !lines.isEmpty {
                         if let file = lines.reversed().compactMap({ RsyncRunner.extractFile(from: $0) }).first {
                             onFile(file)
+                        }
+                        if let speed = lines.reversed().compactMap({ RsyncRunner.parseSpeed(from: $0) }).first {
+                            onSpeed(speed)
                         }
                         onLog(lines)
                         if let p = lines.compactMap({ Self.parseProgress(from: $0) }).last {
@@ -497,5 +529,11 @@ private final class RsyncRunner {
             return trimmed
         }
         return nil
+    }
+
+    private static func parseSpeed(from line: String) -> String? {
+        let tokens = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !tokens.isEmpty else { return nil }
+        return tokens.first { $0.contains("/s") }
     }
 }
