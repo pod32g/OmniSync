@@ -72,9 +72,15 @@ final class SyncViewModel: ObservableObject {
     private var runner = RsyncRunner()
     private var autoSyncTimer: Timer?
     private var lastProgressUpdate = Date.distantPast
+    private var cancellables = Set<AnyCancellable>()
 
     deinit {
         autoSyncTimer?.invalidate()
+    }
+
+    init() {
+        loadPersisted()
+        setupPersistence()
     }
 
     var canSync: Bool {
@@ -215,6 +221,50 @@ final class SyncViewModel: ObservableObject {
     private func resetLogFile() {
         try? FileManager.default.removeItem(at: logFileURL)
         FileManager.default.createFile(atPath: logFileURL.path, contents: Data(), attributes: [.posixPermissions: 0o600])
+    }
+
+    private func setupPersistence() {
+        let defaults = UserDefaults.standard
+
+        func bind<T>(_ publisher: Published<T>.Publisher, key: String) {
+            publisher
+                .sink { value in
+                    defaults.set(value, forKey: key)
+                }
+                .store(in: &cancellables)
+        }
+
+        bind($host, key: "host")
+        bind($username, key: "username")
+        bind($password, key: "password")
+        bind($remotePath, key: "remotePath")
+        bind($localPath, key: "localPath")
+        bind($customFilterPatterns, key: "customFilterPatterns")
+        bind($quietMode, key: "quietMode")
+        bind($autoSyncEnabled, key: "autoSyncEnabled")
+        bind($autoSyncIntervalMinutes, key: "autoSyncIntervalMinutes")
+
+        $selectedFilter
+            .sink { filter in
+                defaults.set(filter.rawValue, forKey: "selectedFilter")
+            }
+            .store(in: &cancellables)
+    }
+
+    private func loadPersisted() {
+        let defaults = UserDefaults.standard
+        host = defaults.string(forKey: "host") ?? ""
+        username = defaults.string(forKey: "username") ?? ""
+        password = defaults.string(forKey: "password") ?? ""
+        remotePath = defaults.string(forKey: "remotePath") ?? ""
+        localPath = defaults.string(forKey: "localPath") ?? ""
+        customFilterPatterns = defaults.string(forKey: "customFilterPatterns") ?? ""
+        quietMode = defaults.object(forKey: "quietMode") as? Bool ?? false
+        autoSyncEnabled = defaults.object(forKey: "autoSyncEnabled") as? Bool ?? false
+        autoSyncIntervalMinutes = defaults.object(forKey: "autoSyncIntervalMinutes") as? Int ?? 30
+        if let filterRaw = defaults.string(forKey: "selectedFilter"), let filter = FileFilter(rawValue: filterRaw) {
+            selectedFilter = filter
+        }
     }
 }
 
