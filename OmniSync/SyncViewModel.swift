@@ -63,6 +63,7 @@ final class SyncViewModel: ObservableObject {
     @Published var progress: Double? = nil
     @Published var log: [String] = []
     @Published var quietMode = false
+    @Published var currentFile: String? = nil
     @Published var autoSyncEnabled = false
     @Published var autoSyncIntervalMinutes = 30
 
@@ -114,6 +115,16 @@ final class SyncViewModel: ObservableObject {
             onLog: { [weak self] lines in
                 Task { @MainActor in self?.appendLogs(lines, progress: nil) }
             },
+            onFile: { [weak self] file in
+                Task { @MainActor in
+                    self?.currentFile = file
+                    if let progress = self?.progress {
+                        self?.statusMessage = "Syncing \(file) (\(Int(progress * 100))%)"
+                    } else {
+                        self?.statusMessage = "Syncing \(file)"
+                    }
+                }
+            },
             onProgress: { [weak self] value in
                 Task { @MainActor in self?.appendLogs([], progress: value) }
             },
@@ -125,6 +136,7 @@ final class SyncViewModel: ObservableObject {
                     self?.statusMessage = success ? "Sync completed" : "Sync failed"
                     self?.isSyncing = false
                     self?.progress = nil
+                    self?.currentFile = nil
                 }
             }
         )
@@ -134,6 +146,7 @@ final class SyncViewModel: ObservableObject {
         runner.cancel()
         isSyncing = false
         statusMessage = "Sync cancelled"
+        currentFile = nil
     }
 
     func updateAutoSyncEnabled(_ enabled: Bool) {
@@ -165,6 +178,9 @@ final class SyncViewModel: ObservableObject {
             if delta >= 0.02 || now.timeIntervalSince(lastProgressUpdate) >= 0.5 {
                 progress = latestProgress
                 lastProgressUpdate = now
+                if let file = currentFile {
+                    statusMessage = "Syncing \(file) (\(Int(latestProgress * 100))%)"
+                }
             }
         }
     }
@@ -290,6 +306,7 @@ private final class RsyncRunner {
     func run(
         config: RsyncConfig,
         onLog: @escaping ([String]) -> Void,
+        onFile: @escaping (String) -> Void,
         onProgress: @escaping (Double?) -> Void,
         onStart: @escaping () -> Void,
         onCompletion: @escaping (Bool) -> Void
@@ -363,6 +380,9 @@ private final class RsyncRunner {
                     }
 
                     if !lines.isEmpty {
+                        if let file = lines.reversed().compactMap({ RsyncRunner.extractFile(from: $0) }).first {
+                            onFile(file)
+                        }
                         onLog(lines)
                         if let p = lines.compactMap({ Self.parseProgress(from: $0) }).last {
                             onProgress(p)
@@ -463,5 +483,19 @@ private final class RsyncRunner {
         let percentString = String(line[percentRange]).replacingOccurrences(of: "%", with: "")
         guard let value = Double(percentString) else { return nil }
         return min(max(value / 100.0, 0), 1)
+    }
+
+    private static func extractFile(from line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.contains("%") { return nil }
+        if trimmed.hasPrefix("sending") || trimmed.hasPrefix("receiving") || trimmed.hasPrefix("sent ") || trimmed.hasPrefix("total size") {
+            return nil
+        }
+        if trimmed.hasSuffix("/") { return trimmed }
+        if trimmed.contains("/") || trimmed.contains(".") {
+            return trimmed
+        }
+        return nil
     }
 }
