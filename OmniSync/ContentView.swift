@@ -28,7 +28,6 @@ struct ContentView: View {
             }
             .frame(minWidth: 880, minHeight: 520)
             .background(.ultraThinMaterial)
-            .ignoresSafeArea()
         }
     }
 }
