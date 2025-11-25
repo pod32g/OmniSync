@@ -29,7 +29,7 @@ struct ContentView: View {
                 .padding(20)
             }
             .frame(minWidth: 880, minHeight: 520)
-            .background(.ultraThinMaterial)
+            .background(.ultraThinMaterial.opacity(0.82))
         }
     }
 }
