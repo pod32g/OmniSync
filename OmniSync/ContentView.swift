@@ -12,13 +12,15 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     header
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            connectionCard
-                            pathsCard
-                            filtersCard
-                            autoSyncCard
-                            syncCard
-                            outputCard
+                        GlassEffectContainer {
+                            VStack(alignment: .leading, spacing: 14) {
+                                connectionCard
+                                pathsCard
+                                filtersCard
+                                autoSyncCard
+                                syncCard
+                                outputCard
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
@@ -211,10 +213,7 @@ private extension ContentView {
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(Color.accentColor.opacity(0.15))
-                        )
+                        .glassEffect(.clear, in: Capsule())
                 }
 
                 Toggle(isOn: $viewModel.autoSyncEnabled) {
@@ -228,7 +227,8 @@ private extension ContentView {
                     Label("Sync Now", systemImage: "arrow.up.circle")
                 }
                 .disabled(!viewModel.canSync)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
+                .tint(.accentColor)
             }
         }
     }
