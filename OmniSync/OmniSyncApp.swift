@@ -19,6 +19,7 @@ struct OmniSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = SyncViewModel()
     @State private var mainWindow: NSWindow?
+    @State private var menuBarVisible = true
 
     var body: some Scene {
         WindowGroup {
@@ -36,7 +37,7 @@ struct OmniSyncApp: App {
             }
         }
 
-        MenuBarExtra(isInserted: .constant(true)) {
+        MenuBarExtra(isInserted: $menuBarVisible) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("OmniSync")
                     .font(.headline)
@@ -86,10 +87,7 @@ struct OmniSyncApp: App {
             .padding()
             .frame(width: 240)
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "externaldrive.fill.badge.icloud")
-                MenuBarProgressView(progress: viewModel.isSyncing ? viewModel.progress : nil)
-            }
+            MenuBarIconProgress(progress: viewModel.isSyncing ? (viewModel.progress ?? 0) : nil)
         }
     }
 
@@ -124,5 +122,27 @@ struct OmniSyncApp: App {
                 window.orderOut(nil)
             }
         }
+    }
+}
+
+private struct MenuBarIconProgress: View {
+    let progress: Double?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "externaldrive.fill.badge.icloud")
+            if let progress {
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.2))
+                        .frame(width: 50, height: 6)
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: max(6, CGFloat(progress) * 50), height: 6)
+                }
+                .frame(width: 50, height: 8, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 2)
     }
 }
