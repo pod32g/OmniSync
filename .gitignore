@@ -1,0 +1,20 @@
+# Xcode
+DerivedData/
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Build products
+build/
+Build/
+*.xcarchive
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Logs
+omnisync.log
+
+# macOS
+.DS_Store
