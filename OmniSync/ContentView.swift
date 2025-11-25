@@ -9,16 +9,6 @@ struct ContentView: View {
             SidebarView(viewModel: viewModel)
         } detail: {
             ZStack(alignment: .topLeading) {
-                LinearGradient(
-                    colors: [
-                        Color(nsColor: .windowBackgroundColor).opacity(0.9),
-                        Color.accentColor.opacity(0.06)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .overlay(.ultraThinMaterial)
-                .ignoresSafeArea()
                 VStack(alignment: .leading, spacing: 16) {
                     header
                     ScrollView {
@@ -37,6 +27,8 @@ struct ContentView: View {
                 .padding(20)
             }
             .frame(minWidth: 880, minHeight: 520)
+            .background(.ultraThinMaterial)
+            .ignoresSafeArea()
         }
     }
 }
