@@ -30,62 +30,133 @@ struct OmniSyncApp: App {
                 Button("Sync Now") { viewModel.sync() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(!viewModel.canSync)
+
+                Button("Test Connection") { viewModel.testConnection() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                    .disabled(viewModel.host.isEmpty || viewModel.username.isEmpty)
+
+                Divider()
+
                 Toggle(isOn: $viewModel.autoSyncEnabled) {
                     Text("Enable Auto Sync")
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
             }
-        }
 
-        MenuBarExtra(isInserted: $menuBarVisible) {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("OmniSync")
-                    .font(.headline)
-                Text(viewModel.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let progress = viewModel.progress {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ProgressView(value: progress, total: 1.0)
-                        Text("\(Int(progress * 100))%")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button {
-                    viewModel.sync()
-                } label: {
-                    HStack {
-                        if viewModel.isSyncing {
-                            ProgressView()
-                        }
-                        Text("Sync Now")
-                    }
-                }
-                .disabled(!viewModel.canSync)
-
-                Toggle("Auto Sync", isOn: $viewModel.autoSyncEnabled)
-                Stepper("Every \(viewModel.autoSyncIntervalMinutes) min", value: $viewModel.autoSyncIntervalMinutes, in: 5...240, step: 5)
-                    .disabled(!viewModel.autoSyncEnabled)
-
-                Divider()
-                Text("Host: \(viewModel.host.isEmpty ? "—" : viewModel.host)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            CommandMenu("View") {
                 Button("Show Main Window") {
                     showMainWindow()
                 }
+                .keyboardShortcut("1", modifiers: [.command])
+
                 Button("Hide Main Window") {
                     hideMainWindow()
                 }
-                Button("Quit OmniSync") {
-                    NSApplication.shared.terminate(nil)
-                }
-                .keyboardShortcut("q")
+                .keyboardShortcut("h", modifiers: [.command, .shift])
             }
-            .padding()
-            .frame(width: 240)
+        }
+
+        MenuBarExtra(isInserted: $menuBarVisible) {
+            GlassEffectContainer {
+                VStack(alignment: .leading, spacing: 12) {
+                    // Header
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("OmniSync")
+                            .font(.headline)
+                        Text(viewModel.statusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    // Progress
+                    if let progress = viewModel.progress {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ProgressView(value: progress, total: 1.0)
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+
+                    // Actions
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            viewModel.sync()
+                        } label: {
+                            HStack {
+                                if viewModel.isSyncing {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityLabel("Syncing")
+                                }
+                                Text("Sync Now")
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.glassProminent)
+                        .disabled(!viewModel.canSync)
+                        .accessibilityLabel("Sync now")
+                        .accessibilityHint("Start syncing from menu bar")
+                        .accessibilityValue(viewModel.canSync ? "Ready" : "Not ready")
+
+                        Toggle("Auto Sync", isOn: $viewModel.autoSyncEnabled)
+                            .accessibilityLabel("Auto sync")
+                            .accessibilityValue(viewModel.autoSyncEnabled ? "Enabled" : "Disabled")
+
+                        Stepper("Every \(viewModel.autoSyncIntervalMinutes) min", value: $viewModel.autoSyncIntervalMinutes, in: 5...240, step: 5)
+                            .disabled(!viewModel.autoSyncEnabled)
+                            .accessibilityLabel("Auto sync interval")
+                            .accessibilityValue("Every \(viewModel.autoSyncIntervalMinutes) minutes")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                    Divider()
+
+                    // Connection Info
+                    Text("Host: \(viewModel.host.isEmpty ? "—" : viewModel.host)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+
+                    // Window Controls
+                    VStack(spacing: 4) {
+                        Button("Show Main Window") {
+                            showMainWindow()
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Show main window")
+                        .accessibilityHint("Open the main OmniSync window")
+
+                        Button("Hide Main Window") {
+                            hideMainWindow()
+                        }
+                        .buttonStyle(.glass)
+                        .accessibilityLabel("Hide main window")
+                        .accessibilityHint("Close the main OmniSync window")
+
+                        Button("Quit OmniSync") {
+                            NSApplication.shared.terminate(nil)
+                        }
+                        .buttonStyle(.glass)
+                        .keyboardShortcut("q")
+                        .accessibilityLabel("Quit OmniSync")
+                        .accessibilityHint("Exit the application")
+                    }
+                }
+                .padding(8)
+                .frame(width: 260)
+            }
         } label: {
             MenuBarIconProgress(progress: viewModel.isSyncing ? (viewModel.progress ?? 0) : nil)
         }

@@ -1,5 +1,12 @@
 import SwiftUI
 
+// MARK: - Card Section
+//
+// Uses native SwiftUI Liquid Glass APIs introduced in macOS 26:
+// - .glassEffect() modifier with .regular and .clear materials
+// - GlassEffectContainer for grouping glass elements
+// - .glassProminent button style
+
 struct CardSection<Content: View>: View {
     let title: String
     let systemImage: String
@@ -19,9 +26,10 @@ struct CardSection<Content: View>: View {
         }
         .padding(16)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .shadow(color: Color.black.opacity(0.08), radius: 14, x: 0, y: 10)
     }
 }
+
+// MARK: - Field Label
 
 struct FieldLabel: View {
     let text: String
@@ -29,21 +37,41 @@ struct FieldLabel: View {
         Text(text)
             .font(.callout.weight(.semibold))
             .foregroundStyle(.secondary)
-            .frame(width: 110, alignment: .leading)
+            .frame(minWidth: 110, alignment: .leading)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 }
 
+// MARK: - Status Badge
+
 struct StatusBadge: View {
     let text: String
+
+    private var isError: Bool {
+        text.lowercased().contains("fail") || text.lowercased().contains("error")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(text.lowercased().contains("fail") ? Color.red.opacity(0.3) : Color.green.opacity(0.3))
+                .fill(isError ? Color.red.opacity(0.25) : Color.green.opacity(0.25))
+                .overlay(
+                    Circle()
+                        .stroke(isError ? Color.red.opacity(0.5) : Color.green.opacity(0.5), lineWidth: 1.5)
+                )
                 .frame(width: 10, height: 10)
             Text(text)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.primary)
             Spacer()
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            Capsule()
+                .fill(.background.opacity(0.5))
+                .background(.ultraThinMaterial, in: Capsule())
+        )
     }
 }
