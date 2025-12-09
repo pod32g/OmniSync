@@ -3,6 +3,27 @@ import Combine
 import AppKit
 import Security
 import UserNotifications
+import UniformTypeIdentifiers
+import Network
+
+enum ExportFormat {
+    case csv
+    case json
+
+    var contentType: UTType {
+        switch self {
+        case .csv: return .commaSeparatedText
+        case .json: return .json
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .csv: return "csv"
+        case .json: return "json"
+        }
+    }
+}
 
 enum FileFilter: String, CaseIterable, Identifiable {
     case all
@@ -66,20 +87,126 @@ enum SyncDirection: String, CaseIterable, Identifiable, Codable {
     }
 }
 
-struct SyncProfile: Identifiable, Codable, Equatable {
+enum ScheduleType: String, CaseIterable, Identifiable, Codable {
+    case interval
+    case daily
+    case weekly
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .interval: return "Every X minutes"
+        case .daily: return "Daily at specific time"
+        case .weekly: return "Weekly on specific days"
+        }
+    }
+}
+
+enum Weekday: Int, CaseIterable, Identifiable, Codable {
+    case sunday = 1
+    case monday = 2
+    case tuesday = 3
+    case wednesday = 4
+    case thursday = 5
+    case friday = 6
+    case saturday = 7
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .sunday: return "Sunday"
+        case .monday: return "Monday"
+        case .tuesday: return "Tuesday"
+        case .wednesday: return "Wednesday"
+        case .thursday: return "Thursday"
+        case .friday: return "Friday"
+        case .saturday: return "Saturday"
+        }
+    }
+}
+
+struct SyncSchedule: Codable, Equatable {
+    var enabled: Bool
+    var type: ScheduleType
+    var intervalMinutes: Int // For interval type
+    var dailyTime: Date // For daily type (only time component used)
+    var weeklyDays: Set<Weekday> // For weekly type
+    var weeklyTime: Date // For weekly type (only time component used)
+
+    static var `default`: SyncSchedule {
+        SyncSchedule(
+            enabled: false,
+            type: .interval,
+            intervalMinutes: 30,
+            dailyTime: Calendar.current.date(from: DateComponents(hour: 2, minute: 0)) ?? Date(),
+            weeklyDays: [.monday, .friday],
+            weeklyTime: Calendar.current.date(from: DateComponents(hour: 22, minute: 0)) ?? Date()
+        )
+    }
+}
+
+
+enum ConflictResolution: String, CaseIterable, Identifiable {
+    case keepLocal = "keep_local"
+    case keepRemote = "keep_remote"
+    case keepNewer = "keep_newer"
+    case keepLarger = "keep_larger"
+    case skip = "skip"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .keepLocal: return "Keep Local"
+        case .keepRemote: return "Keep Remote"
+        case .keepNewer: return "Keep Newer"
+        case .keepLarger: return "Keep Larger"
+        case .skip: return "Skip"
+        }
+    }
+}
+
+struct FileConflict: Identifiable {
+    let id = UUID()
+    let path: String
+    let localModified: Date?
+    let remoteModified: Date?
+    let localSize: Int64?
+    let remoteSize: Int64?
+    var resolution: ConflictResolution = .keepNewer
+}
+
+struct RemoteDestination: Identifiable, Codable, Equatable {
     let id: UUID
-    var name: String
     var host: String
     var username: String
     var remotePath: String
+
+    init(id: UUID = UUID(), host: String, username: String, remotePath: String) {
+        self.id = id
+        self.host = host
+        self.username = username
+        self.remotePath = remotePath
+    }
+}
+
+struct SyncProfile: Identifiable, Codable, Equatable {
+    let id: UUID
+    var name: String
+    var host: String // Legacy - kept for backward compatibility
+    var username: String // Legacy - kept for backward compatibility
+    var remotePath: String // Legacy - kept for backward compatibility
     var localPath: String
     var filter: String
     var customFilterPatterns: String
     var optimizeForSpeed: Bool
     var deleteRemote: Bool
+    var destinations: [RemoteDestination]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, host, username, remotePath, localPath, filter, customFilterPatterns, optimizeForSpeed, deleteRemote
+        case id, name, host, username, remotePath, localPath, filter, customFilterPatterns, optimizeForSpeed, deleteRemote, destinations
     }
 
     init(
@@ -92,7 +219,8 @@ struct SyncProfile: Identifiable, Codable, Equatable {
         filter: String,
         customFilterPatterns: String,
         optimizeForSpeed: Bool,
-        deleteRemote: Bool
+        deleteRemote: Bool,
+        destinations: [RemoteDestination] = []
     ) {
         self.id = id
         self.name = name
@@ -104,6 +232,13 @@ struct SyncProfile: Identifiable, Codable, Equatable {
         self.customFilterPatterns = customFilterPatterns
         self.optimizeForSpeed = optimizeForSpeed
         self.deleteRemote = deleteRemote
+
+        // If destinations provided, use them; otherwise create from legacy fields
+        if destinations.isEmpty && !host.isEmpty {
+            self.destinations = [RemoteDestination(host: host, username: username, remotePath: remotePath)]
+        } else {
+            self.destinations = destinations
+        }
     }
 
     init(from decoder: Decoder) throws {
@@ -118,6 +253,28 @@ struct SyncProfile: Identifiable, Codable, Equatable {
         customFilterPatterns = try container.decode(String.self, forKey: .customFilterPatterns)
         optimizeForSpeed = try container.decodeIfPresent(Bool.self, forKey: .optimizeForSpeed) ?? false
         deleteRemote = try container.decodeIfPresent(Bool.self, forKey: .deleteRemote) ?? false
+
+        // Try to decode destinations; if not present, migrate from legacy fields
+        if let decodedDestinations = try? container.decodeIfPresent([RemoteDestination].self, forKey: .destinations), !decodedDestinations.isEmpty {
+            destinations = decodedDestinations
+        } else if !host.isEmpty {
+            // Migrate legacy profile to new format
+            destinations = [RemoteDestination(host: host, username: username, remotePath: remotePath)]
+        } else {
+            destinations = []
+        }
+    }
+}
+
+struct SyncGroup: Identifiable, Codable, Equatable {
+    let id: UUID
+    var name: String
+    var profileIDs: [UUID]
+
+    init(id: UUID = UUID(), name: String, profileIDs: [UUID] = []) {
+        self.id = id
+        self.name = name
+        self.profileIDs = profileIDs
     }
 }
 
@@ -132,6 +289,58 @@ struct SyncHistoryEntry: Identifiable, Codable, Equatable {
     let filter: String
     let customFilterPatterns: String
     let logLines: [String]
+    let bytesTransferred: Int64
+    let averageSpeedMBps: Double
+
+    enum CodingKeys: String, CodingKey {
+        case id, startedAt, endedAt, success, direction, remotePath, localPath, filter, customFilterPatterns, logLines
+        case bytesTransferred, averageSpeedMBps
+    }
+
+    init(
+        id: UUID,
+        startedAt: Date,
+        endedAt: Date,
+        success: Bool,
+        direction: SyncDirection,
+        remotePath: String,
+        localPath: String,
+        filter: String,
+        customFilterPatterns: String,
+        logLines: [String],
+        bytesTransferred: Int64 = 0,
+        averageSpeedMBps: Double = 0
+    ) {
+        self.id = id
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.success = success
+        self.direction = direction
+        self.remotePath = remotePath
+        self.localPath = localPath
+        self.filter = filter
+        self.customFilterPatterns = customFilterPatterns
+        self.logLines = logLines
+        self.bytesTransferred = bytesTransferred
+        self.averageSpeedMBps = averageSpeedMBps
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+        endedAt = try container.decode(Date.self, forKey: .endedAt)
+        success = try container.decode(Bool.self, forKey: .success)
+        direction = try container.decode(SyncDirection.self, forKey: .direction)
+        remotePath = try container.decode(String.self, forKey: .remotePath)
+        localPath = try container.decode(String.self, forKey: .localPath)
+        filter = try container.decode(String.self, forKey: .filter)
+        customFilterPatterns = try container.decode(String.self, forKey: .customFilterPatterns)
+        logLines = try container.decode([String].self, forKey: .logLines)
+        // Backward compatibility: default to 0 if not present
+        bytesTransferred = try container.decodeIfPresent(Int64.self, forKey: .bytesTransferred) ?? 0
+        averageSpeedMBps = try container.decodeIfPresent(Double.self, forKey: .averageSpeedMBps) ?? 0
+    }
 }
 
 enum ConnectionStatus: Equatable {
@@ -139,6 +348,24 @@ enum ConnectionStatus: Equatable {
     case testing
     case success(String)
     case failed(String)
+}
+
+enum NetworkStatus: Equatable {
+    case connected
+    case disconnected
+    case unknown
+
+    var isConnected: Bool {
+        self == .connected
+    }
+
+    var label: String {
+        switch self {
+        case .connected: return "Connected"
+        case .disconnected: return "Disconnected"
+        case .unknown: return "Unknown"
+        }
+    }
 }
 
 struct TransferEstimate {
@@ -172,7 +399,9 @@ enum SyncError: LocalizedError, Equatable {
     case diskFull
     case pathNotFound(path: String)
     case hostKeyChanged
+    case rsyncNotFound
     case timeout
+    case cancelled
     case unknown(message: String)
 
     var errorDescription: String? {
@@ -189,8 +418,12 @@ enum SyncError: LocalizedError, Equatable {
             return "Path not found: \(path)"
         case .hostKeyChanged:
             return "Host key verification failed. The remote host's key has changed."
+        case .rsyncNotFound:
+            return "rsync command not found. Please install rsync."
         case .timeout:
             return "Connection timed out. The remote host is not responding."
+        case .cancelled:
+            return "Sync was cancelled."
         case .unknown(let message):
             return message
         }
@@ -210,17 +443,23 @@ enum SyncError: LocalizedError, Equatable {
             return "Verify the path exists and is typed correctly. The path might have been moved or deleted."
         case .hostKeyChanged:
             return "Remove the old key from ~/.ssh/known_hosts or disable strict host key checking in settings."
+        case .rsyncNotFound:
+            return "Install rsync using Homebrew: brew install rsync"
         case .timeout:
             return "Check your network connection and try again. The remote server might be down or unreachable."
-        case .unknown:
+        case .cancelled:
             return nil
+        case .unknown:
+            return "Check the sync logs for more details. If the problem persists, report this issue."
         }
     }
 
     static func parse(from output: String) -> SyncError {
         let lowercased = output.lowercased()
 
-        if lowercased.contains("permission denied") {
+        if lowercased.contains("command not found") && lowercased.contains("rsync") {
+            return .rsyncNotFound
+        } else if lowercased.contains("permission denied") {
             // Try to extract path from error
             if let pathMatch = output.range(of: #"([/~][^\s:]+)"#, options: .regularExpression) {
                 let path = String(output[pathMatch])
@@ -326,22 +565,23 @@ final class SyncViewModel: ObservableObject {
     @Published var filesTransferred: Int = 0
     @Published var estimatedTotalFiles: Int = 0
     @Published var profiles: [SyncProfile] = []
-    @Published var autoSyncEnabled = false {
+    @Published var groups: [SyncGroup] = []
+    @Published var schedule: SyncSchedule = .default {
         didSet {
-            guard autoSyncEnabled != oldValue else { return }
-            handleAutoSyncToggle()
+            guard schedule != oldValue else { return }
+            handleScheduleChange()
         }
     }
-    @Published var autoSyncIntervalMinutes = 30 {
-        didSet {
-            guard autoSyncIntervalMinutes != oldValue else { return }
-            refreshAutoSyncTimerIfNeeded()
-        }
-    }
+    // Legacy support - kept for migration
+    @Published var autoSyncEnabled = false
+    @Published var autoSyncIntervalMinutes = 30
     @Published var strictHostKeyChecking = false
     @Published var optimizeForSpeed = false
     @Published var deleteRemoteFiles = false
     @Published var history: [SyncHistoryEntry] = []
+    @Published var conflicts: [FileConflict] = []
+    @Published var showingConflictResolution = false
+    @Published var isDetectingConflicts = false
     @Published var connectionStatus: ConnectionStatus = .unknown
     @Published var transferEstimate: TransferEstimate? = nil
     @Published var isEstimating = false
@@ -360,6 +600,9 @@ final class SyncViewModel: ObservableObject {
     @Published var isVerifying = false
     @Published var verificationResult: String? = nil
     @Published var showingVerificationResult = false
+    @Published var networkStatus: NetworkStatus = .unknown
+    @Published var networkMonitoringEnabled = true
+    @Published var pauseSyncOnNetworkLoss = true
 
     private let maxLogLines = 500
     private let maxHistoryEntries = 50
@@ -378,9 +621,14 @@ final class SyncViewModel: ObservableObject {
     private var currentLogBuffer: [String] = []
     private var currentSyncStart: Date?
     private var baselineProfile: SyncProfile?
+    private var currentBytesTransferred: Int64 = 0
+    private var currentPeakSpeed: Double = 0
+    private var networkMonitor: NWPathMonitor?
+    private var networkMonitorQueue = DispatchQueue(label: "com.omnisync.networkmonitor")
 
     deinit {
         autoSyncTimer?.invalidate()
+        networkMonitor?.cancel()
     }
 
     init() {
@@ -390,9 +638,47 @@ final class SyncViewModel: ObservableObject {
         recentHosts = Self.loadRecentHosts()
         recentLocalPaths = Self.loadRecentPaths()
         setupPersistence()
-        if autoSyncEnabled {
-            handleAutoSyncToggle()
+        if schedule.enabled {
+            handleScheduleChange()
         }
+        if networkMonitoringEnabled {
+            startNetworkMonitoring()
+        }
+    }
+
+    private func startNetworkMonitoring() {
+        networkMonitor = NWPathMonitor()
+        networkMonitor?.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self = self else { return }
+
+                let newStatus: NetworkStatus = path.status == .satisfied ? .connected : .disconnected
+
+                // Only log and react if status changed
+                if newStatus != self.networkStatus {
+                    self.networkStatus = newStatus
+
+                    if newStatus == .connected {
+                        self.appendLogs(["Network connected"], progress: nil)
+                    } else {
+                        self.appendLogs(["Network disconnected"], progress: nil)
+
+                        // Pause ongoing sync if enabled
+                        if self.pauseSyncOnNetworkLoss && self.isSyncing {
+                            self.appendLogs(["Pausing sync due to network loss..."], progress: nil)
+                            self.cancelSync()
+                        }
+                    }
+                }
+            }
+        }
+        networkMonitor?.start(queue: networkMonitorQueue)
+    }
+
+    private func stopNetworkMonitoring() {
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        networkStatus = .unknown
     }
 
     var canSync: Bool {
@@ -483,11 +769,105 @@ final class SyncViewModel: ObservableObject {
         return 0
     }
 
+    private func parseBytesTransferred(from line: String) -> Int64? {
+        // Parse "sent X bytes  received Y bytes" line
+        if line.contains("sent") && line.contains("bytes") && line.contains("received") {
+            // Extract sent and received bytes
+            let components = line.components(separatedBy: " ").filter { !$0.isEmpty }
+            var sentBytes: Int64 = 0
+            var receivedBytes: Int64 = 0
+
+            for i in 0..<components.count {
+                if components[i] == "sent" && i + 2 < components.count && components[i + 2] == "bytes" {
+                    let bytesStr = components[i + 1].replacingOccurrences(of: ",", with: "")
+                    sentBytes = Int64(bytesStr) ?? 0
+                }
+                if components[i] == "received" && i + 2 < components.count && components[i + 2] == "bytes" {
+                    let bytesStr = components[i + 1].replacingOccurrences(of: ",", with: "")
+                    receivedBytes = Int64(bytesStr) ?? 0
+                }
+            }
+
+            if sentBytes > 0 || receivedBytes > 0 {
+                return sentBytes + receivedBytes
+            }
+        }
+        return nil
+    }
+
+    private func parseSpeedMBps(from speedString: String) -> Double? {
+        // Parse speed like "10.5MB/s" or "1.2GB/s" or "500KB/s"
+        let components = speedString.replacingOccurrences(of: "/s", with: "").uppercased()
+
+        if components.contains("GB") {
+            if let value = Double(components.replacingOccurrences(of: "GB", with: "")) {
+                return value * 1024 // Convert GB/s to MB/s
+            }
+        } else if components.contains("MB") {
+            if let value = Double(components.replacingOccurrences(of: "MB", with: "")) {
+                return value
+            }
+        } else if components.contains("KB") {
+            if let value = Double(components.replacingOccurrences(of: "KB", with: "")) {
+                return value / 1024 // Convert KB/s to MB/s
+            }
+        }
+        return nil
+    }
+
     func sync() {
         if autoRetryEnabled {
             syncWithRetry()
         } else {
             performSync()
+        }
+    }
+
+    func syncToMultipleDestinations(_ destinations: [RemoteDestination]) async {
+        // Store original settings to restore after
+        let originalHost = host
+        let originalUsername = username
+        let originalRemotePath = remotePath
+
+        var successCount = 0
+        for (index, destination) in destinations.enumerated() {
+            // Update current destination
+            await MainActor.run {
+                host = destination.host
+                username = destination.username
+                remotePath = destination.remotePath
+                statusMessage = "Syncing to destination \(index + 1) of \(destinations.count): \(destination.host)"
+            }
+
+            // Perform sync
+            await withCheckedContinuation { continuation in
+                var completionCalled = false
+                performSync()
+
+                // Wait for sync to complete by observing isSyncing
+                Task { @MainActor in
+                    while isSyncing {
+                        try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second
+                    }
+                    if !completionCalled {
+                        completionCalled = true
+                        continuation.resume()
+                    }
+                }
+            }
+
+            // Check if sync was successful
+            if let lastEntry = history.first, lastEntry.success {
+                successCount += 1
+            }
+        }
+
+        // Restore original settings
+        await MainActor.run {
+            host = originalHost
+            username = originalUsername
+            remotePath = originalRemotePath
+            statusMessage = "Completed syncing to \(successCount) of \(destinations.count) destinations"
         }
     }
 
@@ -518,6 +898,8 @@ final class SyncViewModel: ObservableObject {
         log.removeAll()
         currentLogBuffer.removeAll()
         currentSyncStart = Date()
+        currentBytesTransferred = 0
+        currentPeakSpeed = 0
         statusMessage = "Starting sync..."
         isSyncing = true
         progress = 0
@@ -549,7 +931,15 @@ final class SyncViewModel: ObservableObject {
         runner.run(
             config: config,
             onLog: { [weak self] lines in
-                Task { @MainActor in self?.appendLogs(lines, progress: nil) }
+                Task { @MainActor in
+                    self?.appendLogs(lines, progress: nil)
+                    // Parse bandwidth stats from logs
+                    for line in lines {
+                        if let bytes = self?.parseBytesTransferred(from: line) {
+                            self?.currentBytesTransferred = bytes
+                        }
+                    }
+                }
             },
             onFile: { [weak self] file in
                 Task { @MainActor in
@@ -563,6 +953,10 @@ final class SyncViewModel: ObservableObject {
             onSpeed: { [weak self] speed in
                 Task { @MainActor in
                     self?.currentSpeed = speed
+                    // Track peak speed for statistics
+                    if let speedMBps = self?.parseSpeedMBps(from: speed) {
+                        self?.currentPeakSpeed = max(self?.currentPeakSpeed ?? 0, speedMBps)
+                    }
                     self?.updateStatus()
                 }
             },
@@ -724,13 +1118,85 @@ final class SyncViewModel: ObservableObject {
     }
 
     func updateAutoSyncEnabled(_ enabled: Bool) {
-        autoSyncEnabled = enabled
+        schedule.enabled = enabled
     }
 
     func refreshAutoSyncTimerIfNeeded() {
-        guard autoSyncEnabled else { return }
+        guard schedule.enabled else { return }
         guard ensureAutoSyncReady() else { return }
         startAutoSyncTimer()
+    }
+
+    private func handleScheduleChange() {
+        guard schedule.enabled else {
+            stopAutoSyncTimer()
+            return
+        }
+        guard ensureAutoSyncReady() else { return }
+        startAutoSyncTimer()
+    }
+
+    private func calculateNextRunDate() -> Date? {
+        let calendar = Calendar.current
+        let now = Date()
+
+        switch schedule.type {
+        case .interval:
+            return calendar.date(byAdding: .minute, value: schedule.intervalMinutes, to: now)
+
+        case .daily:
+            let components = calendar.dateComponents([.hour, .minute], from: schedule.dailyTime)
+            guard let hour = components.hour, let minute = components.minute else { return nil }
+
+            var nextRun = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now) ?? now
+            if nextRun <= now {
+                nextRun = calendar.date(byAdding: .day, value: 1, to: nextRun) ?? now
+            }
+            return nextRun
+
+        case .weekly:
+            guard !schedule.weeklyDays.isEmpty else { return nil }
+
+            let components = calendar.dateComponents([.hour, .minute], from: schedule.weeklyTime)
+            guard let hour = components.hour, let minute = components.minute else { return nil }
+
+            let currentWeekday = calendar.component(.weekday, from: now)
+            let sortedDays = schedule.weeklyDays.map { $0.rawValue }.sorted()
+
+            // Find next scheduled day
+            var nextDay: Int?
+            for day in sortedDays {
+                if day > currentWeekday {
+                    nextDay = day
+                    break
+                } else if day == currentWeekday {
+                    // Check if time hasn't passed yet today
+                    if let todayRun = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now),
+                       todayRun > now {
+                        nextDay = day
+                        break
+                    }
+                }
+            }
+
+            // If no day found this week, use first day of next week
+            if nextDay == nil {
+                nextDay = sortedDays.first
+            }
+
+            guard let targetWeekday = nextDay else { return nil }
+
+            // Calculate days to add
+            var daysToAdd = targetWeekday - currentWeekday
+            if daysToAdd <= 0 {
+                daysToAdd += 7
+            }
+
+            var nextRun = calendar.date(byAdding: .day, value: daysToAdd, to: now) ?? now
+            nextRun = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: nextRun) ?? nextRun
+
+            return nextRun
+        }
     }
 
     func testConnection() {
@@ -805,6 +1271,87 @@ final class SyncViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func detectConflicts() {
+        isDetectingConflicts = true
+        conflicts.removeAll()
+
+        Task {
+            let filterArgs = buildFilterArgs()
+            let config = RsyncConfig(
+                host: host,
+                username: username,
+                password: password,
+                remotePath: remotePath,
+                localPath: localPath,
+                syncDirection: syncDirection,
+                filterArgs: filterArgs,
+                quietMode: false,
+                logFileURL: logFileURL,
+                strictHostKeyChecking: strictHostKeyChecking,
+                dryRun: true, // Force dry-run for conflict detection
+                bandwidthLimitKBps: 0,
+                resumePartials: false,
+                optimizeForSpeed: optimizeForSpeed,
+                deleteRemoteFiles: deleteRemoteFiles
+            )
+
+            var detectedConflicts: [FileConflict] = []
+
+            runner.run(
+                config: config,
+                onLog: { lines in
+                    // Parse rsync itemize output for conflicts
+                    for line in lines {
+                        if let conflict = self.parseConflictFromItemize(line) {
+                            detectedConflicts.append(conflict)
+                        }
+                    }
+                },
+                onFile: { _ in },
+                onSpeed: { _ in },
+                onProgress: { _ in },
+                onStart: { },
+                onCompletion: { [weak self] success in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        self.conflicts = detectedConflicts
+                        self.isDetectingConflicts = false
+                        if !detectedConflicts.isEmpty {
+                            self.showingConflictResolution = true
+                        } else if success {
+                            // No conflicts, proceed with sync
+                            self.sync()
+                        }
+                    }
+                }
+            )
+        }
+    }
+
+    private func parseConflictFromItemize(_ line: String) -> FileConflict? {
+        // Rsync itemize format: YXcstpoguax path
+        // Where Y is the type of update (e.g., '>' for transferred file)
+        // We're looking for files that would be overwritten
+        guard line.count > 11 else { return nil }
+
+        let updateType = line.prefix(1)
+        let filePath = String(line.dropFirst(12))
+
+        // Only care about files that would be modified
+        if updateType == ">" || updateType == "." || updateType == "c" {
+            return FileConflict(
+                path: filePath,
+                localModified: nil,
+                remoteModified: nil,
+                localSize: nil,
+                remoteSize: nil,
+                resolution: .keepNewer
+            )
+        }
+
+        return nil
     }
 
     func runPreflightChecks() {
@@ -962,16 +1509,43 @@ final class SyncViewModel: ObservableObject {
     private func startAutoSyncTimer() {
         stopAutoSyncTimer()
 
-        let interval = max(1, autoSyncIntervalMinutes) * 60
-        autoSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(interval), repeats: true) { [weak self] _ in
+        guard let nextRun = calculateNextRunDate() else {
+            appendLogs(["Failed to calculate next sync time"], progress: nil)
+            return
+        }
+
+        let interval = nextRun.timeIntervalSinceNow
+        guard interval > 0 else {
+            // Next run is now or in the past, run immediately and reschedule
+            Task { @MainActor in
+                if self.isSyncing {
+                    self.appendLogs(["Scheduled sync skipped; a sync is already running."], progress: nil)
+                } else {
+                    self.sync()
+                }
+                // Reschedule for next run
+                self.startAutoSyncTimer()
+            }
+            return
+        }
+
+        // Log next scheduled run
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        appendLogs(["Next scheduled sync: \(formatter.string(from: nextRun))"], progress: nil)
+
+        autoSyncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 guard self.ensureAutoSyncReady() else { return }
                 if self.isSyncing {
-                    self.appendLogs(["Auto sync skipped; a sync is already running."], progress: nil)
-                    return
+                    self.appendLogs(["Scheduled sync skipped; a sync is already running."], progress: nil)
+                } else {
+                    self.sync()
                 }
-                self.sync()
+                // Reschedule for next occurrence
+                self.startAutoSyncTimer()
             }
         }
     }
@@ -991,12 +1565,9 @@ final class SyncViewModel: ObservableObject {
     }
 
     private func handleAutoSyncToggle() {
-        guard autoSyncEnabled else {
-            stopAutoSyncTimer()
-            return
-        }
-        guard ensureAutoSyncReady() else { return }
-        startAutoSyncTimer()
+        // Legacy support - migrate to new schedule system
+        schedule.enabled = autoSyncEnabled
+        schedule.intervalMinutes = autoSyncIntervalMinutes
     }
 
     private func buildFilterArgs() -> [String] {
@@ -1064,6 +1635,8 @@ final class SyncViewModel: ObservableObject {
         bind($resumePartials, key: "resumePartials")
         bind($optimizeForSpeed, key: "optimizeForSpeed")
         bind($deleteRemoteFiles, key: "deleteRemoteFiles")
+        bind($networkMonitoringEnabled, key: "networkMonitoringEnabled")
+        bind($pauseSyncOnNetworkLoss, key: "pauseSyncOnNetworkLoss")
 
         $syncDirection
             .sink { direction in
@@ -1097,6 +1670,28 @@ final class SyncViewModel: ObservableObject {
                 Self.persistProfiles(profiles)
             }
             .store(in: &cancellables)
+
+        $groups
+            .sink { groups in
+                Self.persistGroups(groups)
+            }
+            .store(in: &cancellables)
+
+        $schedule
+            .sink { schedule in
+                Self.persistSchedule(schedule)
+            }
+            .store(in: &cancellables)
+
+        $networkMonitoringEnabled
+            .sink { [weak self] enabled in
+                if enabled {
+                    self?.startNetworkMonitoring()
+                } else {
+                    self?.stopNetworkMonitoring()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private func loadPersisted() {
@@ -1117,6 +1712,8 @@ final class SyncViewModel: ObservableObject {
         notifyOnCompletion = defaults.object(forKey: "notifyOnCompletion") as? Bool ?? false
         optimizeForSpeed = defaults.object(forKey: "optimizeForSpeed") as? Bool ?? false
         deleteRemoteFiles = defaults.object(forKey: "deleteRemoteFiles") as? Bool ?? false
+        networkMonitoringEnabled = defaults.object(forKey: "networkMonitoringEnabled") as? Bool ?? true
+        pauseSyncOnNetworkLoss = defaults.object(forKey: "pauseSyncOnNetworkLoss") as? Bool ?? true
         if let filterRaw = defaults.string(forKey: "selectedFilter"), let filter = FileFilter(rawValue: filterRaw) {
             selectedFilter = filter
         }
@@ -1124,6 +1721,14 @@ final class SyncViewModel: ObservableObject {
             syncDirection = direction
         }
         profiles = Self.loadProfiles()
+        groups = Self.loadGroups()
+        schedule = Self.loadSchedule()
+
+        // Migrate legacy settings to new schedule if needed
+        if schedule.type == .interval && schedule.intervalMinutes == 30 && (autoSyncEnabled || autoSyncIntervalMinutes != 30) {
+            schedule.enabled = autoSyncEnabled
+            schedule.intervalMinutes = autoSyncIntervalMinutes
+        }
     }
 
     // MARK: - Notifications
@@ -1167,6 +1772,29 @@ final class SyncViewModel: ObservableObject {
         profiles.removeAll { $0.id == profile.id }
     }
 
+    // MARK: - Groups
+
+    func createGroup(named name: String, profileIDs: [UUID]) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let group = SyncGroup(name: trimmed, profileIDs: profileIDs)
+        groups.append(group)
+    }
+
+    func deleteGroup(_ group: SyncGroup) {
+        groups.removeAll { $0.id == group.id }
+    }
+
+    func syncGroup(_ group: SyncGroup) async {
+        for profileID in group.profileIDs {
+            guard let profile = profiles.first(where: { $0.id == profileID }) else { continue }
+            await MainActor.run {
+                applyProfile(profile)
+            }
+            await sync()
+        }
+    }
+
     private static func persistProfiles(_ profiles: [SyncProfile]) {
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(profiles) {
@@ -1177,6 +1805,32 @@ final class SyncViewModel: ObservableObject {
     private static func loadProfiles() -> [SyncProfile] {
         guard let data = UserDefaults.standard.data(forKey: "syncProfiles") else { return [] }
         return (try? JSONDecoder().decode([SyncProfile].self, from: data)) ?? []
+    }
+
+    private static func persistGroups(_ groups: [SyncGroup]) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(groups) {
+            UserDefaults.standard.set(data, forKey: "syncGroups")
+        }
+    }
+
+    private static func loadGroups() -> [SyncGroup] {
+        guard let data = UserDefaults.standard.data(forKey: "syncGroups") else { return [] }
+        return (try? JSONDecoder().decode([SyncGroup].self, from: data)) ?? []
+    }
+
+    private static func persistSchedule(_ schedule: SyncSchedule) {
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(schedule) {
+            UserDefaults.standard.set(data, forKey: "syncSchedule")
+        }
+    }
+
+    private static func loadSchedule() -> SyncSchedule {
+        guard let data = UserDefaults.standard.data(forKey: "syncSchedule") else {
+            return .default
+        }
+        return (try? JSONDecoder().decode(SyncSchedule.self, from: data)) ?? .default
     }
 
     func applyBaselineProfile() {
@@ -1201,17 +1855,31 @@ final class SyncViewModel: ObservableObject {
 
     private func recordHistory(success: Bool) {
         guard let start = currentSyncStart else { return }
+        let endTime = Date()
+        let duration = endTime.timeIntervalSince(start)
+
+        // Calculate average speed in MB/s
+        let averageSpeedMBps: Double
+        if duration > 0 && currentBytesTransferred > 0 {
+            let bytesPerSecond = Double(currentBytesTransferred) / duration
+            averageSpeedMBps = bytesPerSecond / (1024 * 1024) // Convert to MB/s
+        } else {
+            averageSpeedMBps = 0
+        }
+
         let entry = SyncHistoryEntry(
             id: UUID(),
             startedAt: start,
-            endedAt: Date(),
+            endedAt: endTime,
             success: success && !cancellationRequested,
             direction: syncDirection,
             remotePath: remotePath,
             localPath: localPath,
             filter: selectedFilter.rawValue,
             customFilterPatterns: customFilterPatterns,
-            logLines: currentLogBuffer
+            logLines: currentLogBuffer,
+            bytesTransferred: currentBytesTransferred,
+            averageSpeedMBps: averageSpeedMBps
         )
         var updated = history
         updated.insert(entry, at: 0)
@@ -1222,6 +1890,8 @@ final class SyncViewModel: ObservableObject {
         Self.persistHistory(updated, to: historyFileURL)
         currentLogBuffer.removeAll()
         currentSyncStart = nil
+        currentBytesTransferred = 0
+        currentPeakSpeed = 0
     }
 
     private static func persistHistory(_ history: [SyncHistoryEntry], to url: URL) {
@@ -1232,6 +1902,80 @@ final class SyncViewModel: ObservableObject {
     private static func loadHistory(from url: URL) -> [SyncHistoryEntry] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         return (try? JSONDecoder().decode([SyncHistoryEntry].self, from: data)) ?? []
+    }
+
+    func exportHistory(format: ExportFormat) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [format.contentType]
+        panel.nameFieldStringValue = "omnisync-history.\(format.fileExtension)"
+        panel.canCreateDirectories = true
+        panel.title = "Export Sync History"
+        panel.message = "Choose where to save the exported history"
+
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+
+            Task { @MainActor in
+                do {
+                    switch format {
+                    case .csv:
+                        let csv = self.generateCSV()
+                        try csv.write(to: url, atomically: true, encoding: .utf8)
+                    case .json:
+                        let encoder = JSONEncoder()
+                        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                        encoder.dateEncodingStrategy = .iso8601
+                        let data = try encoder.encode(self.history)
+                        try data.write(to: url)
+                    }
+                    self.statusMessage = "History exported successfully"
+                    self.appendLogs(["Exported \(self.history.count) history entries to \(url.lastPathComponent)"], progress: nil)
+                } catch {
+                    self.statusMessage = "Export failed: \(error.localizedDescription)"
+                    self.appendLogs(["Failed to export history: \(error.localizedDescription)"], progress: nil)
+                }
+            }
+        }
+    }
+
+    private func generateCSV() -> String {
+        var csv = "Date,Time,Status,Direction,Local Path,Remote Path,Filter,Duration,Bytes Transferred,Avg Speed (MB/s)\n"
+
+        for entry in history {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .short
+            dateFormatter.timeStyle = .none
+            let date = dateFormatter.string(from: entry.startedAt)
+
+            let timeFormatter = DateFormatter()
+            timeFormatter.dateStyle = .none
+            timeFormatter.timeStyle = .short
+            let time = timeFormatter.string(from: entry.startedAt)
+
+            let status = entry.success ? "Success" : "Failed"
+            let duration = entry.endedAt.timeIntervalSince(entry.startedAt)
+            let durationStr = String(format: "%.1fs", duration)
+
+            // Format bandwidth stats
+            let bytesStr = ByteCountFormatter.string(fromByteCount: entry.bytesTransferred, countStyle: .file)
+            let speedStr = String(format: "%.2f", entry.averageSpeedMBps)
+
+            // Escape commas and quotes in fields
+            let localPath = escapeCSV(entry.localPath)
+            let remotePath = escapeCSV(entry.remotePath)
+            let filter = escapeCSV(entry.filter)
+
+            csv += "\(date),\(time),\(status),\(entry.direction.label),\(localPath),\(remotePath),\(filter),\(durationStr),\(bytesStr),\(speedStr)\n"
+        }
+
+        return csv
+    }
+
+    private func escapeCSV(_ field: String) -> String {
+        if field.contains(",") || field.contains("\"") || field.contains("\n") {
+            return "\"\(field.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }
+        return field
     }
 
     // MARK: - Keychain

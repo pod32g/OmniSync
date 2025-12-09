@@ -31,14 +31,23 @@ struct OmniSyncApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(!viewModel.canSync)
 
-                Button("Test Connection") { viewModel.testConnection() }
-                    .keyboardShortcut("t", modifiers: [.command, .shift])
-                    .disabled(viewModel.host.isEmpty || viewModel.username.isEmpty)
+                Button("Cancel Sync") { viewModel.cancelSync() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(!viewModel.isSyncing)
 
                 Divider()
 
-                Toggle(isOn: $viewModel.autoSyncEnabled) {
-                    Text("Enable Auto Sync")
+                Button("Test Connection") { viewModel.testConnection() }
+                    .keyboardShortcut("t", modifiers: [.command])
+                    .disabled(viewModel.host.isEmpty || viewModel.username.isEmpty)
+
+                Button("Run Pre-flight Checks") { viewModel.runPreflightChecks() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                Divider()
+
+                Toggle(isOn: $viewModel.schedule.enabled) {
+                    Text("Enable Scheduled Syncs")
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
             }

@@ -15,7 +15,9 @@ struct SettingsView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    scheduleCard
                     syncBehaviorCard
+                    networkMonitoringCard
                     notificationsCard
                     profilesCard
                 }
@@ -45,6 +47,87 @@ struct SettingsView: View {
 }
 
 private extension SettingsView {
+    var scheduleCard: some View {
+        CardSection(title: "Schedule", systemImage: "calendar.badge.clock") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Enable scheduled syncs", isOn: $viewModel.schedule.enabled)
+                    .accessibilityLabel("Enable scheduled syncs")
+                    .accessibilityHint("Automatically run syncs on a schedule")
+
+                if viewModel.schedule.enabled {
+                    Picker("Schedule type", selection: $viewModel.schedule.type) {
+                        ForEach(ScheduleType.allCases) { type in
+                            Text(type.label).tag(type)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityLabel("Schedule type")
+
+                    switch viewModel.schedule.type {
+                    case .interval:
+                        HStack {
+                            Text("Repeat every")
+                            Spacer()
+                            TextField("Minutes", value: $viewModel.schedule.intervalMinutes, formatter: numberFormatter)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 80)
+                                .multilineTextAlignment(.trailing)
+                            Text("minutes")
+                        }
+                        Text("Sync will run every \(viewModel.schedule.intervalMinutes) minutes")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                    case .daily:
+                        DatePicker("Time", selection: $viewModel.schedule.dailyTime, displayedComponents: .hourAndMinute)
+                            .accessibilityLabel("Daily sync time")
+                        Text("Sync will run every day at \(formattedTime(viewModel.schedule.dailyTime))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                    case .weekly:
+                        DatePicker("Time", selection: $viewModel.schedule.weeklyTime, displayedComponents: .hourAndMinute)
+                            .accessibilityLabel("Weekly sync time")
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Days of week")
+                                .font(.callout.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            FlowLayout(spacing: 8) {
+                                ForEach(Weekday.allCases) { day in
+                                    Toggle(day.label, isOn: Binding(
+                                        get: { viewModel.schedule.weeklyDays.contains(day) },
+                                        set: { enabled in
+                                            if enabled {
+                                                viewModel.schedule.weeklyDays.insert(day)
+                                            } else {
+                                                viewModel.schedule.weeklyDays.remove(day)
+                                            }
+                                        }
+                                    ))
+                                    .toggleStyle(.button)
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+
+                        if !viewModel.schedule.weeklyDays.isEmpty {
+                            let days = viewModel.schedule.weeklyDays.sorted(by: { $0.rawValue < $1.rawValue }).map { $0.label }.joined(separator: ", ")
+                            Text("Sync will run on \(days) at \(formattedTime(viewModel.schedule.weeklyTime))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Select at least one day")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     var syncBehaviorCard: some View {
         CardSection(title: "Sync Behavior", systemImage: "arrow.triangle.2.circlepath") {
             VStack(alignment: .leading, spacing: 10) {
@@ -109,6 +192,41 @@ private extension SettingsView {
 
                 if viewModel.verifyAfterSync {
                     Text("After each sync, rsync will verify all files using checksums to ensure data integrity. This may take additional time.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    var networkMonitoringCard: some View {
+        CardSection(title: "Network Monitoring", systemImage: "network") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Network status")
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(viewModel.networkStatus == .connected ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(viewModel.networkStatus.label)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Toggle("Enable network monitoring", isOn: $viewModel.networkMonitoringEnabled)
+                    .accessibilityLabel("Enable network monitoring")
+                    .accessibilityHint("Monitor network connectivity changes")
+                    .accessibilityValue(viewModel.networkMonitoringEnabled ? "Enabled" : "Disabled")
+
+                if viewModel.networkMonitoringEnabled {
+                    Toggle("Pause sync on network loss", isOn: $viewModel.pauseSyncOnNetworkLoss)
+                        .accessibilityLabel("Pause sync on network loss")
+                        .accessibilityHint("Automatically cancel syncs when network is lost")
+                        .accessibilityValue(viewModel.pauseSyncOnNetworkLoss ? "Enabled" : "Disabled")
+
+                    Text("When enabled, ongoing syncs will be cancelled automatically if network connection is lost.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -195,6 +313,65 @@ private extension SettingsView {
                     }
                 }
             }
+        }
+    }
+
+    func formattedTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
+// MARK: - Flow Layout for weekday buttons
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = FlowResult(
+            in: proposal.replacingUnspecifiedDimensions().width,
+            subviews: subviews,
+            spacing: spacing
+        )
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = FlowResult(
+            in: bounds.width,
+            subviews: subviews,
+            spacing: spacing
+        )
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + result.frames[index].minX, y: bounds.minY + result.frames[index].minY), proposal: .unspecified)
+        }
+    }
+
+    struct FlowResult {
+        var size: CGSize = .zero
+        var frames: [CGRect] = []
+
+        init(in maxWidth: CGFloat, subviews: Subviews, spacing: CGFloat) {
+            var currentX: CGFloat = 0
+            var currentY: CGFloat = 0
+            var lineHeight: CGFloat = 0
+
+            for subview in subviews {
+                let size = subview.sizeThatFits(.unspecified)
+
+                if currentX + size.width > maxWidth && currentX > 0 {
+                    currentX = 0
+                    currentY += lineHeight + spacing
+                    lineHeight = 0
+                }
+
+                frames.append(CGRect(origin: CGPoint(x: currentX, y: currentY), size: size))
+                currentX += size.width + spacing
+                lineHeight = max(lineHeight, size.height)
+            }
+
+            self.size = CGSize(width: maxWidth, height: currentY + lineHeight)
         }
     }
 }

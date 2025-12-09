@@ -43,6 +43,35 @@ struct FieldLabel: View {
     }
 }
 
+// MARK: - Interactive Button Modifier
+// Custom implementation until native .interactive() API is available
+
+struct InteractiveTapScaleModifier: ViewModifier {
+    let enabled: Bool
+    @State private var isPressed = false
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(isPressed && enabled ? 0.95 : 1.0)
+            .animation(.spring(response: 0.2, dampingFraction: 0.6), value: isPressed)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if enabled { isPressed = true }
+                    }
+                    .onEnded { _ in
+                        isPressed = false
+                    }
+            )
+    }
+}
+
+extension View {
+    func interactiveTapScale(enabled: Bool = true) -> some View {
+        modifier(InteractiveTapScaleModifier(enabled: enabled))
+    }
+}
+
 // MARK: - Status Badge
 
 struct StatusBadge: View {
