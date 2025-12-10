@@ -17,9 +17,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct OmniSyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var viewModel = SyncViewModel()
+    private let container: AppDependencyContainer
+    @StateObject private var viewModel: SyncViewModel
     @State private var mainWindow: NSWindow?
     @State private var menuBarVisible = true
+
+    init() {
+        let diContainer = AppDependencyContainer()
+        self.container = diContainer
+        _viewModel = StateObject(wrappedValue: diContainer.makeSyncViewModel())
+    }
 
     var body: some Scene {
         WindowGroup {

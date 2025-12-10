@@ -101,7 +101,8 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(viewModel: SyncViewModel())
+    let container = AppDependencyContainer()
+    ContentView(viewModel: container.makeSyncViewModel())
 }
 
 // MARK: - Sections
@@ -419,106 +420,160 @@ private extension ContentView {
 
     var header: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("OmniSync")
-                    .font(.largeTitle.bold())
-                    .foregroundStyle(.primary)
-                Text("Push your local folders to NAS over rsync with optional auto-sync.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            headerTitle
             Spacer()
-            HStack(spacing: 12) {
-                if viewModel.isSyncing {
-                    Label("Sync in progress", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(Capsule().fill(.regularMaterial))
-                        .transition(.scale.combined(with: .opacity))
-                }
-
-                Toggle(isOn: $viewModel.autoSyncEnabled) {
-                    Label("Auto Sync", systemImage: viewModel.autoSyncEnabled ? "clock.badge.checkmark" : "clock")
-                }
-                .toggleStyle(.switch)
-                .accessibilityLabel("Auto sync toggle")
-                .accessibilityHint("Enable or disable automatic syncing")
-                .accessibilityValue(viewModel.autoSyncEnabled ? "Enabled" : "Disabled")
-
-                Button {
-                    showingSettings = true
-                } label: {
-                    Label("Settings", systemImage: "gearshape")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.secondary)
-                .accessibilityLabel("Settings")
-                .accessibilityHint("Open settings window")
-
-                Menu {
-                    Button {
-                        viewModel.sync()
-                    } label: {
-                        Label("Sync Now", systemImage: "bolt.fill")
-                    }
-                    .disabled(!viewModel.canSync)
-
-                    // Show multi-destination option if current profile has multiple destinations
-                    if let currentProfile = viewModel.profiles.first(where: { profile in
-                        profile.host == viewModel.host &&
-                        profile.username == viewModel.username &&
-                        profile.remotePath == viewModel.remotePath
-                    }), !currentProfile.destinations.isEmpty {
-                        Button {
-                            Task {
-                                await viewModel.syncToMultipleDestinations(currentProfile.destinations)
-                            }
-                        } label: {
-                            Label("Sync to All Destinations (\(currentProfile.destinations.count))", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        .disabled(!viewModel.canSync)
-                    }
-
-                    Divider()
-
-                    Button {
-                        viewModel.estimateTransfer()
-                    } label: {
-                        Label("Estimate & Sync", systemImage: "chart.bar.fill")
-                    }
-                    .disabled(!viewModel.canSync || viewModel.isEstimating)
-
-                    Button {
-                        viewModel.runPreflightChecks()
-                    } label: {
-                        Label("Pre-flight Check & Sync", systemImage: "checkmark.shield.fill")
-                    }
-                    .disabled(!viewModel.canSync || viewModel.isRunningPreflightChecks)
-
-                    Button {
-                        viewModel.detectConflicts()
-                    } label: {
-                        Label("Detect Conflicts", systemImage: "exclamationmark.triangle.fill")
-                    }
-                    .disabled(!viewModel.canSync || viewModel.isDetectingConflicts)
-                } label: {
-                    Label(viewModel.isEstimating ? "Estimating..." : viewModel.isRunningPreflightChecks ? "Checking..." : "Sync Now", systemImage: viewModel.isEstimating ? "hourglass" : viewModel.isRunningPreflightChecks ? "checkmark.shield" : "arrow.up.circle")
-                } primaryAction: {
-                    viewModel.sync()
-                }
-                .disabled(!viewModel.canSync)
-                .buttonStyle(.glassProminent)
-                .tint(.accentColor)
-                .shadow(color: .accentColor.opacity(viewModel.canSync ? 0.3 : 0), radius: 12, x: 0, y: 6)
-                .scaleEffect(viewModel.canSync ? 1.0 : 0.96)
-                .animation(.spring(response: 0.4, dampingFraction: 0.7), value: viewModel.canSync)
-                .interactiveTapScale(enabled: viewModel.canSync)
-                .accessibilityLabel(viewModel.isEstimating ? "Estimating transfer" : "Sync now")
-                .accessibilityHint("Start syncing your local folder to the NAS")
-                .accessibilityValue(viewModel.canSync ? "Ready to sync" : "Not ready")
-            }
+            headerActions
         }
+        .id("header")
+    }
+
+    private var headerTitle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("OmniSync")
+                .font(.largeTitle.bold())
+                .foregroundStyle(.primary)
+            Text("Push your local folders to NAS over rsync with optional auto-sync.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var headerActions: some View {
+        HStack(spacing: 12) {
+            headerSyncStatus
+            autoSyncToggle
+            settingsButton
+            syncMenuButton
+        }
+    }
+
+    @ViewBuilder
+    private var headerSyncStatus: some View {
+        if viewModel.isSyncing {
+            Label("Sync in progress", systemImage: "arrow.triangle.2.circlepath")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(.regularMaterial))
+                .transition(.scale.combined(with: .opacity))
+        }
+    }
+
+    private var autoSyncToggle: some View {
+        Toggle(isOn: $viewModel.autoSyncEnabled) {
+            Label("Auto Sync", systemImage: viewModel.autoSyncEnabled ? "clock.badge.checkmark" : "clock")
+        }
+        .toggleStyle(.switch)
+        .accessibilityLabel("Auto sync toggle")
+        .accessibilityHint("Enable or disable automatic syncing")
+        .accessibilityValue(viewModel.autoSyncEnabled ? "Enabled" : "Disabled")
+    }
+
+    private var settingsButton: some View {
+        Button {
+            showingSettings = true
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.secondary)
+        .accessibilityLabel("Settings")
+        .accessibilityHint("Open settings window")
+    }
+
+    private var syncMenuButton: some View {
+        let isEnabled = canTriggerSync
+
+        return Menu {
+            Button {
+                viewModel.sync()
+            } label: {
+                Label("Sync Now", systemImage: "bolt.fill")
+            }
+            .disabled(!viewModel.canSync)
+
+            syncAllDestinationsButton()
+
+            Divider()
+
+            Button {
+                viewModel.estimateTransfer()
+            } label: {
+                Label("Estimate & Sync", systemImage: "chart.bar.fill")
+            }
+            .disabled(!viewModel.canSync || viewModel.isEstimating)
+
+            Button {
+                viewModel.runPreflightChecks()
+            } label: {
+                Label("Pre-flight Check & Sync", systemImage: "checkmark.shield.fill")
+            }
+            .disabled(!viewModel.canSync || viewModel.isRunningPreflightChecks)
+
+            Button {
+                viewModel.detectConflicts()
+            } label: {
+                Label("Detect Conflicts", systemImage: "exclamationmark.triangle.fill")
+            }
+            .disabled(!viewModel.canSync || viewModel.isDetectingConflicts)
+        } label: {
+            Label(syncMenuTitle, systemImage: syncMenuSystemImage)
+        } primaryAction: {
+            viewModel.sync()
+        }
+        .disabled(!isEnabled)
+        .buttonStyle(.glassProminent)
+        .tint(.accentColor)
+        .shadow(color: .accentColor.opacity(isEnabled ? 0.3 : 0), radius: 12, x: 0, y: 6)
+        .scaleEffect(isEnabled ? 1.0 : 0.96)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isEnabled)
+        .interactiveTapScale(enabled: isEnabled)
+        .accessibilityLabel(viewModel.isEstimating ? "Estimating transfer" : "Sync now")
+        .accessibilityHint("Start syncing your local folder to the NAS")
+        .accessibilityValue(isEnabled ? "Ready to sync" : "Not ready")
+    }
+
+    @ViewBuilder
+    private func syncAllDestinationsButton() -> some View {
+        if let currentProfile = viewModel.profiles.first(where: { profile in
+            profile.host == viewModel.host &&
+            profile.username == viewModel.username &&
+            profile.remotePath == viewModel.remotePath
+        }), !currentProfile.destinations.isEmpty {
+            Button {
+                Task {
+                    await viewModel.syncToMultipleDestinations(currentProfile.destinations)
+                }
+            } label: {
+                Label("Sync to All Destinations (\(currentProfile.destinations.count))", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(!viewModel.canSync)
+        }
+    }
+
+    private var syncMenuTitle: String {
+        if viewModel.isEstimating {
+            return "Estimating..."
+        }
+        if viewModel.isRunningPreflightChecks {
+            return "Checking..."
+        }
+        return "Sync Now"
+    }
+
+    private var syncMenuSystemImage: String {
+        if viewModel.isEstimating {
+            return "hourglass"
+        }
+        if viewModel.isRunningPreflightChecks {
+            return "checkmark.shield"
+        }
+        return "arrow.up.circle"
+    }
+
+    private var canTriggerSync: Bool {
+        viewModel.canSync && !viewModel.isEstimating && !viewModel.isRunningPreflightChecks
     }
 
     // MARK: - UI helpers
